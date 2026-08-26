@@ -17,7 +17,7 @@ DEFAULT_REGIONS = "SJC"
 # 🌐 主域名终极大汇总同步开关
 # 设置为 "YES": 开启！将所有扫到的极品节点汇总推送到你的主域名（全球负载均衡）
 # 设置为 "NO": 关闭！仅同步到各个地区子域名，不修改主域名的解析记录
-SYNC_MAIN_DOMAIN = "YES"
+SYNC_MAIN_DOMAIN = "NO"
 # ==========================================
 
     # === Cloudflare IPv4 Ranges (IP段配置区) ===
