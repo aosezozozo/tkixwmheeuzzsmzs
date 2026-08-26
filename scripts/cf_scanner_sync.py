@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 
 # ==========================================
 # 🎯 全局默认地区设置 (如果想要永久换地区，只改这里！)
-# 支持多个地区，用逗号隔开，例如 "SJC,LAX,HKG,FRA"
+# 支持多个地区，用逗号隔开，例如 "SJC,LAX,HKG,FRA,NRT"
 # 💡 新手不知道有什么地区？可以直接填 "ALL"，系统会全区盲扫并自动创建所有能扫到的地区子域名！
 # ==========================================
-DEFAULT_REGIONS = "SJC,LAX,FRA,NRT"
+DEFAULT_REGIONS = "SJC"
 # ==========================================
 
     # === Cloudflare IPv4 Ranges (IP段配置区) ===
