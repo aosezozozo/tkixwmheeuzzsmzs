@@ -210,7 +210,7 @@ def main():
         valid_ips_by_region = {region: [] for region in target_regions}
     
     # We will loop scanning until we find enough IPs for all regions, or hit max attempts.
-    max_attempts = 5
+    max_attempts = 10
     attempt = 0
     ALL_MODE_LIMIT = 20
     
