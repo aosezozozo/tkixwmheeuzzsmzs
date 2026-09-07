@@ -31,8 +31,6 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_TARGET_DOMAIN: ${{ secrets.CF_TARGET_DOMAIN }}
           CF_EMAIL: ${{ secrets.CF_EMAIL }}
-          SYNC_COUNT: '5' # Number of IPs to keep in DNS
-          SCAN_COUNT: '2000' # Number of IPs to test per run
         run: python scripts/cf_scanner_sync.py
 
       - name: Commit and Push IP Log
