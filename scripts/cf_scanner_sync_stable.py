@@ -21,7 +21,7 @@ SYNC_MAIN_DOMAIN = "NO"
 
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
-SYNC_COUNT = 10
+SYNC_COUNT = 6
 # ==========================================
 
     # === Cloudflare IPv4 Ranges (IP段配置区) ===
@@ -159,30 +159,6 @@ def save_ips_to_file(best_ips):
             
     print("Successfully saved latest IPs to ips-v4.txt")
 
-    # 追加保存优质 IP 段到执行日志
-    log_dir = ".github/workflows"
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "hot_cidrs.log")
-    
-    existing_cidrs = set()
-    if os.path.exists(log_file):
-        with open(log_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    existing_cidrs.add(line)
-    
-    for ip in best_ips:
-        parts = ip['ip'].split('.')
-        if len(parts) == 4:
-            cidr_str = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24#{ip['colo']}"
-            existing_cidrs.add(cidr_str)
-            
-    with open(log_file, "w", encoding="utf-8") as f:
-        for cidr in sorted(list(existing_cidrs)):
-            f.write(f"{cidr}\n")
-    print(f"Successfully saved hot CIDRs to {log_file}")
-
 def main():
     api_token = os.environ.get("CF_API_TOKEN")
     zone_id = os.environ.get("CF_ZONE_ID")
@@ -198,12 +174,13 @@ def main():
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
-    check_api_url = "https://proxyip.xxxxxxx.nyc.mn/check"
+    check_api_url = "https://cloudflarenb-pagesip.pages.dev/check"
     sync_count = SYNC_COUNT
     ALL_MODE_LIMIT = 20
     
-    # === 1. 从 ips-v4.txt 提取历史优秀 IP ===
+    # === 从 ips-v4.txt 中提取历史优秀 IP 和 IP 段 (/24) ===
     historical_ips = []
+    hot_cidrs = []
     if os.path.exists("ips-v4.txt"):
         try:
             with open("ips-v4.txt", "r", encoding="utf-8") as f:
@@ -212,24 +189,11 @@ def main():
                     if line:
                         ip_str = line.split("#")[0]
                         historical_ips.append(ip_str)
-            print(f"Loaded {len(historical_ips)} historical IPs from ips-v4.txt")
-        except Exception as e:
-            pass
-
-    # === 2. 从执行日志提取对应地区的优质 IP 段 ===
-    hot_cidrs = []
-    log_file = ".github/workflows/hot_cidrs.log"
-    if os.path.exists(log_file):
-        try:
-            with open(log_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and "#" in line:
-                        cidr, colo = line.split("#", 1)
-                        if is_scan_all or colo.upper() in target_regions:
-                            hot_cidrs.append(cidr)
+                        parts = ip_str.split(".")
+                        if len(parts) == 4:
+                            hot_cidrs.append(f"{parts[0]}.{parts[1]}.{parts[2]}.0/24")
             hot_cidrs = list(set(hot_cidrs))
-            print(f"Loaded {len(hot_cidrs)} targeted hot /24 subnets from {log_file}")
+            print(f"Loaded {len(historical_ips)} historical IPs and {len(hot_cidrs)} hot /24 subnets from ips-v4.txt")
         except Exception as e:
             pass
     
