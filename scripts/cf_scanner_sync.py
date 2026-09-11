@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 # 支持多个地区，用逗号隔开，例如 "SJC,LAX,HKG,FRA,NRT"
 # 💡 新手不知道有什么地区？可以直接填 "ALL"，系统会全区盲扫并自动创建所有能扫到的地区子域名！
 # ==========================================
-DEFAULT_REGIONS = "SJC,LAX,HKG,FRA,NRT"
+DEFAULT_REGIONS = "SJC"
 
 # 🌐 主域名终极大汇总同步开关
 # 设置为 "YES": 开启！将所有扫到的极品节点汇总推送到你的主域名（全球负载均衡）
@@ -21,91 +21,69 @@ SYNC_MAIN_DOMAIN = "NO"
 
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
-SYNC_COUNT = 2
+SYNC_COUNT = 10
+# 控制每次随机生成多少个 IP 去抽卡测速 (默认 2000 个)
+SCAN_COUNT = 2000
 # ==========================================
 
-import ipaddress
+    # === Cloudflare IPv4 Ranges (IP段配置区) ===
+    # 现在完全从根目录的 ip.txt 文件读取
+def load_cf_cidrs(file_path="ip.txt"):
+    if not os.path.exists(file_path):
+        print(f"Error: 找不到 {file_path} 文件！请确保该文件存在并填写了需要扫描的 IP 段。")
+        exit(1)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            cidrs = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        if not cidrs:
+            print(f"Error: {file_path} 文件为空！请在里面填入需要扫描的网段 (CIDR)。")
+            exit(1)
+        return cidrs
+    except Exception as e:
+        print(f"Error: 读取 {file_path} 失败！错误信息: {e}")
+        exit(1)
 
-def generate_ips(target_regions, is_scan_all, ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
-    history_ips = []
-    
-    # 第一步：先扫描 ips-v4.txt 中的历史优秀单 IP
-    print("Stage 1: Scanning historical excellent single IPs...")
-    if os.path.exists(ips_v4_file):
+CF_CIDRS = load_cf_cidrs()
+    # ==========================================
+
+def generate_random_ip(hot_cidrs=None):
+    # 如果有热点网段，并且掷骰子命中 50% 概率，就从热点网段里抽；否则从大网段抽
+    for _ in range(10): # 避免死循环，最多重试 10 次
         try:
-            with open(ips_v4_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        ip = line.split("#")[0]
-                        history_ips.append(ip)
-                        yield ip
-        except Exception as e:
-            print(f"Error reading {ips_v4_file}: {e}")
-
-    # 第二步：智能匹配 good_subnets.txt 中已标记的优秀地区段
-    print("Stage 2: Scanning learned good subnets by region...")
-    good_cidrs_scanned = set()
-    if os.path.exists("good_subnets.txt"):
-        try:
-            with open("good_subnets.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and "#" in line:
-                        cidr, colo = line.split("#", 1)
-                        colo = colo.upper()
-                        # 如果需要扫描所有地区，或者这个段的地区在我们需要的列表中，就优先扫它
-                        if is_scan_all or colo in target_regions:
-                            good_cidrs_scanned.add(cidr)
-                            try:
-                                net = ipaddress.ip_network(cidr, strict=False)
-                                for ip_obj in net:
-                                    yield str(ip_obj)
-                            except Exception:
-                                pass
-        except Exception as e:
-            print(f"Error reading good_subnets.txt: {e}")
-
-    # 第三步：将历史单 IP 扩展为 /24 C段继续扫描（跳过第二步已经扫过的）
-    derived_cidrs = set()
-    for ip in history_ips:
-        parts = ip.split('.')
-        if len(parts) == 4:
-            cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-            if cidr not in good_cidrs_scanned:
-                derived_cidrs.add(cidr)
+            if hot_cidrs and random.random() < 0.5:
+                cidr = random.choice(hot_cidrs)
+            else:
+                cidr = random.choice(CF_CIDRS)
+                
+            if '/' in cidr:
+                base_ip, prefix = cidr.split('/')
+                prefix = int(prefix)
+            else:
+                base_ip = cidr
+                prefix = 32
             
-    if derived_cidrs:
-        print(f"Stage 3: Scanning {len(derived_cidrs)} derived /24 subnets from history...")
-        for cidr in derived_cidrs:
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-                for ip_obj in net:
-                    yield str(ip_obj)
-            except Exception:
-                pass
-
-    # 第四步：如果配额依然没满，按照 ip.txt 中的段进行兜底轮巡扫描
-    print("Stage 4: Scanning full IP database from ip.txt...")
-    if os.path.exists(ip_txt_file):
-        try:
-            with open(ip_txt_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        cidr = line
-                        try:
-                            if '/' in cidr:
-                                net = ipaddress.ip_network(cidr, strict=False)
-                                for ip_obj in net:
-                                    yield str(ip_obj)
-                            else:
-                                yield cidr
-                        except Exception:
-                            pass
-        except Exception as e:
-            print(f"Error reading {ip_txt_file}: {e}")
-
+            parts = list(map(int, base_ip.split('.')))
+            if len(parts) != 4:
+                continue
+                
+            ip_long = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+            
+            host_bits = 32 - prefix
+            mask = (1 << host_bits) - 1
+            random_host = random.randint(0, mask)
+            
+            final_ip_long = (ip_long & ~mask) | random_host
+            
+            p1 = (final_ip_long >> 24) & 255
+            p2 = (final_ip_long >> 16) & 255
+            p3 = (final_ip_long >> 8) & 255
+            p4 = final_ip_long & 255
+            
+            return f"{p1}.{p2}.{p3}.{p4}"
+        except Exception:
+            continue
+            
+    return "1.1.1.1" # 兜底返回，防止崩溃
 
 def test_ip(ip, check_api_url, timeout=5.0):
     start_time = time.time()
@@ -178,7 +156,6 @@ def save_ips_to_file(best_ips):
     bj_time = datetime.now(timezone.utc) + timedelta(hours=8)
     time_str = bj_time.strftime("%Y-%m-%d %H:%M:%S")
     
-    # Save the individual IPs
     with open("ips-v4.txt", "w", encoding="utf-8") as f:
         # 写入纯 IP 和 地区备注，格式为 IP#地区
         # 很多代理/机场客户端使用 # 作为节点备注的分隔符
@@ -186,36 +163,6 @@ def save_ips_to_file(best_ips):
             f.write(f"{ip['ip']}#{ip['colo']}\n")
             
     print("Successfully saved latest IPs to ips-v4.txt")
-
-    # Save the successful /24 subnets persistently for future prioritized scanning
-    subnets = set()
-    if os.path.exists("good_subnets.txt"):
-        try:
-            with open("good_subnets.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        subnets.add(line.strip())
-        except Exception:
-            pass
-
-    new_subnets = 0
-    for ip in best_ips:
-        parts = ip['ip'].split('.')
-        if len(parts) == 4:
-            cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-            entry = f"{cidr}#{ip['colo']}"
-            if entry not in subnets:
-                subnets.add(entry)
-                new_subnets += 1
-
-    if new_subnets > 0:
-        try:
-            with open("good_subnets.txt", "w", encoding="utf-8") as f:
-                for entry in sorted(subnets):
-                    f.write(f"{entry}\n")
-            print(f"Successfully learned and saved {new_subnets} new good subnets to good_subnets.txt")
-        except Exception as e:
-            print(f"Error saving subnets: {e}")
 
 def main():
     api_token = os.environ.get("CF_API_TOKEN")
@@ -232,8 +179,26 @@ def main():
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
-    check_api_url = "https://pagesip.woxxxxxx.nyc.mn/check"
+    check_api_url = "https://proxyip.xxxxxxxx.nyc.mn/check"
     sync_count = SYNC_COUNT
+    scan_count = SCAN_COUNT
+    
+    # === 从 ips-v4.txt 中提取历史优秀 IP 段 (/24) ===
+    hot_cidrs = []
+    if os.path.exists("ips-v4.txt"):
+        try:
+            with open("ips-v4.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        ip_str = line.split("#")[0]
+                        parts = ip_str.split(".")
+                        if len(parts) == 4:
+                            hot_cidrs.append(f"{parts[0]}.{parts[1]}.{parts[2]}.0/24")
+            hot_cidrs = list(set(hot_cidrs))
+            print(f"Loaded {len(hot_cidrs)} hot /24 subnets from ips-v4.txt for targeted scanning.")
+        except Exception as e:
+            pass
     
     can_sync = True
     if not all([api_token, zone_id, base_domain, cf_email]):
@@ -241,82 +206,63 @@ def main():
         print("DNS Synchronization will be skipped, but IP scanning will still proceed!")
         can_sync = False
         
-    print(f"Starting sequential IP scan...")
+    print(f"Generating {scan_count} random Cloudflare IPs...")
+    ips_to_test = [generate_random_ip(hot_cidrs) for _ in range(scan_count)]
+    
     print(f"Testing IPs concurrently via {check_api_url}...")
     
     valid_ips_by_region = {}
     if not is_scan_all:
         valid_ips_by_region = {region: [] for region in target_regions}
     
+    # We will loop scanning until we find enough IPs for all regions, or hit max attempts.
+    max_attempts = 10
+    attempt = 0
     ALL_MODE_LIMIT = 20
     
-    def quotas_met():
-        if is_scan_all:
-            total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-            return total_collected >= ALL_MODE_LIMIT
-        else:
-            return all(len(ips) >= sync_count for ips in valid_ips_by_region.values())
-
-    tested_ips = set()
-    ip_generator = generate_ips(target_regions=target_regions, is_scan_all=is_scan_all)
-    
-    # === 并发线程配置区 ===
-    # 控制同时发起多少个测速请求，默认 50，太高容易导致测速接口崩溃
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-        futures = {}
+    while attempt < max_attempts:
+        # Check if we hit our target sync count for ALL target regions
+        total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+        if is_scan_all and total_collected >= ALL_MODE_LIMIT:
+            break
+        elif not is_scan_all and all(len(ips) >= sync_count for ips in valid_ips_by_region.values()):
+            break
+            
+        attempt += 1
+        print(f"--- Scan Iteration {attempt} ---")
+        ips_to_test = [generate_random_ip(hot_cidrs) for _ in range(scan_count)]
         
-        def submit_next_batch(num):
-            count = 0
-            for ip in ip_generator:
-                if ip not in tested_ips:
-                    tested_ips.add(ip)
-                    futures[executor.submit(test_ip, ip, check_api_url)] = ip
-                    count += 1
-                    if count >= num:
-                        break
+        # === 并发线程配置区 ===
+        # 控制同时发起多少个测速请求，默认 50，太高容易导致测速接口崩溃
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(test_ip, ip, check_api_url): ip for ip in ips_to_test}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    colo = result.get('colo', 'UNK').upper()
+                    if colo != 'UNK' and (is_scan_all or colo in target_regions):
+                        if colo not in valid_ips_by_region:
+                            valid_ips_by_region[colo] = []
+                            
+                        if is_scan_all:
+                            total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+                            if total_collected < ALL_MODE_LIMIT:
+                                valid_ips_by_region[colo].append(result)
+                                print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
+                        else:
+                            if len(valid_ips_by_region[colo]) < sync_count:
+                                valid_ips_by_region[colo].append(result)
+                                print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
                         
-        # 初始提交一批任务
-        submit_next_batch(200)
-        
-        total_tested = 0
-        while futures:
-            done, not_done = concurrent.futures.wait(futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
-            
-            for future in done:
-                ip = futures.pop(future)
-                total_tested += 1
-                # Commented out progress logging to reduce console noise
-                # if total_tested % 50 == 0:
-                #     print(f"[{datetime.now().strftime('%H:%M:%S')}] Tested {total_tested} IPs so far...")
+                # Early exit check
+                total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+                if is_scan_all and total_collected >= ALL_MODE_LIMIT:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                elif not is_scan_all and all(len(ips) >= sync_count for ips in valid_ips_by_region.values()):
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
                     
-                try:
-                    result = future.result()
-                    if result:
-                        colo = result.get('colo', 'UNK').upper()
-                        if colo != 'UNK' and (is_scan_all or colo in target_regions):
-                            if colo not in valid_ips_by_region:
-                                valid_ips_by_region[colo] = []
-                                
-                            if is_scan_all:
-                                total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-                                if total_collected < ALL_MODE_LIMIT:
-                                    valid_ips_by_region[colo].append(result)
-                                    print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
-                            else:
-                                if len(valid_ips_by_region[colo]) < sync_count:
-                                    valid_ips_by_region[colo].append(result)
-                                    print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
-                except Exception:
-                    pass
-                    
-            if quotas_met():
-                print("All regional quotas met! Stopping scan early.")
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
-                
-            # 继续补充任务以维持并发量
-            submit_next_batch(len(done))
-            
     print("\nScan completed. Summary:")
     total_found = 0
     all_best_ips = []
