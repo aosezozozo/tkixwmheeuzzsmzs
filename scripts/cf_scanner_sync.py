@@ -48,15 +48,10 @@ def load_cf_cidrs(file_path="ip.txt"):
 CF_CIDRS = load_cf_cidrs()
     # ==========================================
 
-def generate_random_ip(hot_cidrs=None):
-    # 如果有热点网段，并且掷骰子命中 50% 概率，就从热点网段里抽；否则从大网段抽
+def generate_random_ip(cidrs):
     for _ in range(10): # 避免死循环，最多重试 10 次
         try:
-            if hot_cidrs and random.random() < 0.5:
-                cidr = random.choice(hot_cidrs)
-            else:
-                cidr = random.choice(CF_CIDRS)
-                
+            cidr = random.choice(cidrs)
             if '/' in cidr:
                 base_ip, prefix = cidr.split('/')
                 prefix = int(prefix)
@@ -232,29 +227,34 @@ def main():
         # 控制同时发起多少个测速请求，太高容易导致测速接口崩溃
         with concurrent.futures.ThreadPoolExecutor(max_workers=200) as executor:
             futures = {executor.submit(test_ip, ip, check_api_url): ip for ip in ips_to_test}
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                if result:
-                    colo = result.get('colo', 'UNK').upper()
-                    if colo != 'UNK' and (is_scan_all or colo in target_regions):
-                        if colo not in valid_ips_by_region:
-                            valid_ips_by_region[colo] = []
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=10.0):
+                    result = future.result()
+                    if result:
+                        colo = result.get('colo', 'UNK').upper()
+                        if colo != 'UNK' and (is_scan_all or colo in target_regions):
+                            if colo not in valid_ips_by_region:
+                                valid_ips_by_region[colo] = []
+                                
+                            if is_scan_all:
+                                total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+                                if total_collected < ALL_MODE_LIMIT:
+                                    valid_ips_by_region[colo].append(result)
+                                    print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
+                            else:
+                                if len(valid_ips_by_region[colo]) < sync_count:
+                                    valid_ips_by_region[colo].append(result)
+                                    print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
                             
-                        if is_scan_all:
-                            total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-                            if total_collected < ALL_MODE_LIMIT:
-                                valid_ips_by_region[colo].append(result)
-                                print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
-                        else:
-                            if len(valid_ips_by_region[colo]) < sync_count:
-                                valid_ips_by_region[colo].append(result)
-                                print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
-                        
-                # Early exit check
-                if check_quota_met():
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return True
-        return False
+                    # Early exit check
+                    if check_quota_met():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return True
+            except concurrent.futures.TimeoutError:
+                print(f"[-] Batch {batch_name} reached 10s timeout, cancelling remaining tasks...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                
+        return check_quota_met()
 
     quota_met = False
     tested_ips = set()
@@ -280,7 +280,10 @@ def main():
                 
         print(f"[*] Capacity for {phase_name}: {total_ips} IPs")
         
-        if total_ips <= 100000:
+        # 为了应对海量 CIDR (比如 7000 个)，我们采用“CIDR 轮询展开”或者“带去重的快速随机生成”
+        # 如果总 IP 数量不是超级大，直接全量展开、去重、洗牌、切片，保证 100% 扫完且不重复
+        if total_ips <= 2000000:
+            print(f"[*] Pool is within expansion limit (<= 2,000,000). Extracting all IPs for exact shuffling and batching...")
             all_ips_pool = []
             for cidr in cidrs_list:
                 if '/' not in cidr:
@@ -303,9 +306,10 @@ def main():
                 tested_ips.update(chunk)
                 quota_met = run_batch(chunk, f"{phase_name} Iteration {i+1} (Exact Shuffle)")
         else:
-            print(f"[*] Pool is massive. Using fast random generation for {phase_name}...")
+            # 对于几千万/上亿的超大 IP 池，展开会导致内存爆炸，所以采用快速去重抽卡
+            print(f"[*] Pool is massive (> 2,000,000). Using fast random generation for {phase_name}...")
             attempt = 0
-            max_attempts = 15
+            max_attempts = 30 # 增加尝试次数，因为池子大
             while not quota_met and attempt < max_attempts:
                 attempt += 1
                 chunk = []
