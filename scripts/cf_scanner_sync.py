@@ -161,9 +161,7 @@ def save_ips_to_file(best_ips):
     print("Successfully saved latest IPs to ips-v4.txt")
 
     # 追加保存优质 IP 段到执行日志
-    log_dir = ".github/workflows"
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "hot_cidrs.log")
+    log_file = "hot_cidrs.txt"
     
     existing_cidrs = set()
     if os.path.exists(log_file):
@@ -223,7 +221,7 @@ def main():
 
     # === 2. 从执行日志提取对应地区的优质 IP 段 ===
     hot_cidrs = []
-    log_file = ".github/workflows/hot_cidrs.log"
+    log_file = "hot_cidrs.txt"
     if os.path.exists(log_file):
         try:
             with open(log_file, "r", encoding="utf-8") as f:
