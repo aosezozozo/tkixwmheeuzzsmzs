@@ -252,6 +252,7 @@ def main():
         return False
         
     def process_ips(ips_to_test):
+        success_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
             futures = {executor.submit(test_ip, ip, check_api_url): ip for ip in ips_to_test}
             for future in concurrent.futures.as_completed(futures):
@@ -259,6 +260,7 @@ def main():
                 if result:
                     colo = result.get('colo', 'UNK').upper()
                     if colo != 'UNK' and (is_scan_all or colo in target_regions):
+                        success_count += 1
                         if colo not in valid_ips_by_region:
                             valid_ips_by_region[colo] = []
                             
@@ -279,6 +281,7 @@ def main():
                 if is_target_reached():
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
+        return success_count
 
     # Phase 1: Test historical IPs first
     if historical_ips:
@@ -287,14 +290,30 @@ def main():
 
     # Phase 2: Generate from hot subnets if target not reached
     if not is_target_reached() and hot_cidrs:
-        print(f"\nPhase 2: Target not reached. Scanning IPs generated from hot subnets...")
-        attempt = 0
-        max_attempts = 5
-        while attempt < max_attempts and not is_target_reached():
-            attempt += 1
-            print(f"--- Hot Subnets Scan Iteration {attempt} ---")
-            ips_to_test = [generate_random_ip_from_cidrs(hot_cidrs) for _ in range(500)]
-            process_ips(ips_to_test)
+        print(f"\nPhase 2: Target not reached. Scanning individual hot subnets...")
+        for cidr in hot_cidrs:
+            if is_target_reached():
+                break
+                
+            print(f"--- Scanning Hot Subnet: {cidr} ---")
+            # 测试该段的 100 个随机 IP (约 40% 的覆盖率)
+            ips_to_test = [generate_random_ip_from_cidrs([cidr]) for _ in range(100)]
+            success_count = process_ips(ips_to_test)
+            
+            if success_count == 0:
+                print(f"[DEAD SUBNET] No valid IPs found in {cidr}. Removing from log.")
+                # 从日志文件中移除该段
+                if os.path.exists(log_file):
+                    with open(log_file, "r", encoding="utf-8") as f:
+                        lines = [line.strip() for line in f if line.strip()]
+                    
+                    new_lines = [line for line in lines if not line.startswith(cidr + "#")]
+                    
+                    with open(log_file, "w", encoding="utf-8") as f:
+                        for line in new_lines:
+                            f.write(f"{line}\n")
+            else:
+                print(f"[ACTIVE SUBNET] {cidr} is alive ({success_count} responsive IPs).")
             
     # Phase 3: Generate from all subnets in ip.txt if target still not reached
     if not is_target_reached():
