@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 # 💡 新手不知道有什么地区？可以直接填 "ALL"，系统会全区盲扫并自动创建所有能扫到的地区子域名！
 # 💡 填 "ALL_NOSYNC" 则是全局盲扫但不进行 DNS 同步，只将扫到的优质 IP 及其网段保存到日志！
 # ==========================================
-DEFAULT_REGIONS = "ALL_NOSYNC"
+DEFAULT_REGIONS = "LAX"
 
 # 🌐 主域名终极大汇总同步开关
 # 设置为 "YES": 开启！将所有扫到的极品节点汇总推送到你的主域名（全球负载均衡）
