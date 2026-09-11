@@ -21,7 +21,7 @@ SYNC_MAIN_DOMAIN = "NO"
 
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
-SYNC_COUNT = 6
+SYNC_COUNT = 10
 # ==========================================
 
 import ipaddress
@@ -232,7 +232,7 @@ def main():
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
-    check_api_url = "https://pagesip.woxxxxxx.nyc.mn/check"
+    check_api_url = "https://proxyip.xxxxxxxx.nyc.mn/check"
     sync_count = SYNC_COUNT
     
     can_sync = True
