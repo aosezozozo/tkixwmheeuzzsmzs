@@ -217,7 +217,7 @@ def main():
         if is_scan_all:
             return sum(len(ips) for ips in valid_ips_by_region.values()) >= ALL_MODE_LIMIT
         else:
-            return all(len(ips) >= sync_count for ips in valid_ips_by_region.values())
+            return all(len(valid_ips_by_region.get(r, [])) >= sync_count for r in target_regions)
 
     def run_batch(ips_to_test, batch_name=""):
         if not ips_to_test:
@@ -245,11 +245,7 @@ def main():
                                 if len(valid_ips_by_region[colo]) < sync_count:
                                     valid_ips_by_region[colo].append(result)
                                     print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
-                            
-                    # Early exit check
-                    if check_quota_met():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        return True
+                                    
             except concurrent.futures.TimeoutError:
                 print(f"[-] Batch {batch_name} reached 10s timeout, cancelling remaining tasks...")
                 executor.shutdown(wait=False, cancel_futures=True)
