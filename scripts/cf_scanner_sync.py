@@ -6,14 +6,13 @@ import re
 import requests
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
-import ipaddress
 
 # ==========================================
 # 🎯 全局默认地区设置 (如果想要永久换地区，只改这里！)
 # 支持多个地区，用逗号隔开，例如 "SJC,LAX,HKG,FRA,NRT"
 # 💡 新手不知道有什么地区？可以直接填 "ALL"，系统会全区盲扫并自动创建所有能扫到的地区子域名！
 # ==========================================
-DEFAULT_REGIONS = "SJC,LAX"
+DEFAULT_REGIONS = "SJC"
 
 # 🌐 主域名终极大汇总同步开关
 # 设置为 "YES": 开启！将所有扫到的极品节点汇总推送到你的主域名（全球负载均衡）
@@ -22,9 +21,8 @@ SYNC_MAIN_DOMAIN = "NO"
 
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
-SYNC_COUNT = 5
-# 控制每次最多随机生成多少个 IP 去抽卡测速 (默认 2000 个)。
-# 注：如果你提供的 IP 池非常小（比如只有 10 个），程序会自动感知并缩小此数字，绝不多测。
+SYNC_COUNT = 10
+# 控制每次随机生成多少个 IP 去抽卡测速 (默认 2000 个)
 SCAN_COUNT = 2000
 # ==========================================
 
@@ -48,10 +46,15 @@ def load_cf_cidrs(file_path="ip.txt"):
 CF_CIDRS = load_cf_cidrs()
     # ==========================================
 
-def generate_random_ip(cidrs):
+def generate_random_ip(hot_cidrs=None):
+    # 如果有热点网段，并且掷骰子命中 50% 概率，就从热点网段里抽；否则从大网段抽
     for _ in range(10): # 避免死循环，最多重试 10 次
         try:
-            cidr = random.choice(cidrs)
+            if hot_cidrs and random.random() < 0.5:
+                cidr = random.choice(hot_cidrs)
+            else:
+                cidr = random.choice(CF_CIDRS)
+                
             if '/' in cidr:
                 base_ip, prefix = cidr.split('/')
                 prefix = int(prefix)
@@ -182,20 +185,18 @@ def main():
     
     # === 从 ips-v4.txt 中提取历史优秀 IP 段 (/24) ===
     hot_cidrs = []
-    literal_ips = []
     if os.path.exists("ips-v4.txt"):
         try:
             with open("ips-v4.txt", "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith("#"):
+                    if line:
                         ip_str = line.split("#")[0]
-                        literal_ips.append(ip_str)
                         parts = ip_str.split(".")
                         if len(parts) == 4:
                             hot_cidrs.append(f"{parts[0]}.{parts[1]}.{parts[2]}.0/24")
             hot_cidrs = list(set(hot_cidrs))
-            print(f"Loaded {len(literal_ips)} literal IPs and {len(hot_cidrs)} hot subnets from ips-v4.txt for targeted scanning.")
+            print(f"Loaded {len(hot_cidrs)} hot /24 subnets from ips-v4.txt for targeted scanning.")
         except Exception as e:
             pass
     
@@ -205,141 +206,63 @@ def main():
         print("DNS Synchronization will be skipped, but IP scanning will still proceed!")
         can_sync = False
         
+    print(f"Generating {scan_count} random Cloudflare IPs...")
+    ips_to_test = [generate_random_ip(hot_cidrs) for _ in range(scan_count)]
+    
     print(f"Testing IPs concurrently via {check_api_url}...")
     
     valid_ips_by_region = {}
     if not is_scan_all:
         valid_ips_by_region = {region: [] for region in target_regions}
     
+    # We will loop scanning until we find enough IPs for all regions, or hit max attempts.
+    max_attempts = 10
+    attempt = 0
     ALL_MODE_LIMIT = 20
-
-    def check_quota_met():
-        if is_scan_all:
-            return sum(len(ips) for ips in valid_ips_by_region.values()) >= ALL_MODE_LIMIT
-        else:
-            return all(len(valid_ips_by_region.get(r, [])) >= sync_count for r in target_regions)
-
-    def run_batch(ips_to_test, batch_name=""):
-        if not ips_to_test:
-            return False
-        print(f"\n--- Scanning {batch_name} ({len(ips_to_test)} IPs) ---")
+    
+    while attempt < max_attempts:
+        # Check if we hit our target sync count for ALL target regions
+        total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+        if is_scan_all and total_collected >= ALL_MODE_LIMIT:
+            break
+        elif not is_scan_all and all(len(ips) >= sync_count for ips in valid_ips_by_region.values()):
+            break
+            
+        attempt += 1
+        print(f"--- Scan Iteration {attempt} ---")
+        ips_to_test = [generate_random_ip(hot_cidrs) for _ in range(scan_count)]
+        
         # === 并发线程配置区 ===
-        # 控制同时发起多少个测速请求，默认100，太高容易导致测速接口崩溃
-        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+        # 控制同时发起多少个测速请求，默认 50，太高容易导致测速接口崩溃
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
             futures = {executor.submit(test_ip, ip, check_api_url): ip for ip in ips_to_test}
-            try:
-                for future in concurrent.futures.as_completed(futures, timeout=10.0):
-                    result = future.result()
-                    if result:
-                        colo = result.get('colo', 'UNK').upper()
-                        if colo != 'UNK' and (is_scan_all or colo in target_regions):
-                            if colo not in valid_ips_by_region:
-                                valid_ips_by_region[colo] = []
-                                
-                            if is_scan_all:
-                                total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-                                if total_collected < ALL_MODE_LIMIT:
-                                    valid_ips_by_region[colo].append(result)
-                                    print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
-                            else:
-                                if len(valid_ips_by_region[colo]) < sync_count:
-                                    valid_ips_by_region[colo].append(result)
-                                    print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
-                                    
-            except concurrent.futures.TimeoutError:
-                print(f"[-] Batch {batch_name} reached 10s timeout, cancelling remaining tasks...")
-                executor.shutdown(wait=False, cancel_futures=True)
-                
-        return check_quota_met()
-
-    quota_met = False
-    tested_ips = set()
-    
-    # --- Helper: Safely expand CIDRs into randomized batches ---
-    def process_cidrs(cidrs_list, phase_name):
-        nonlocal quota_met
-        if quota_met or not cidrs_list:
-            return
-            
-        print(f"\n[*] Calculating capacity for {phase_name} pool...")
-        total_ips = 0
-        for cidr in cidrs_list:
-            if '/' in cidr:
-                try:
-                    prefix = int(cidr.split('/')[1])
-                    if prefix <= 32:
-                        total_ips += 1 << (32 - prefix)
-                except:
-                    pass
-            else:
-                total_ips += 1
-                
-        print(f"[*] Capacity for {phase_name}: {total_ips} IPs")
-        
-        # 为了应对海量 CIDR (比如 7000 个)，我们采用“CIDR 轮询展开”或者“带去重的快速随机生成”
-        # 如果总 IP 数量不是超级大，直接全量展开、去重、洗牌、切片，保证 100% 扫完且不重复
-        if total_ips <= 2000000:
-            print(f"[*] Pool is within expansion limit (<= 2,000,000). Extracting all IPs for exact shuffling and batching...")
-            all_ips_pool = []
-            for cidr in cidrs_list:
-                if '/' not in cidr:
-                    cidr += '/32'
-                try:
-                    net = ipaddress.ip_network(cidr, strict=False)
-                    for ip in net:
-                        all_ips_pool.append(str(ip))
-                except:
-                    pass
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    colo = result.get('colo', 'UNK').upper()
+                    if colo != 'UNK' and (is_scan_all or colo in target_regions):
+                        if colo not in valid_ips_by_region:
+                            valid_ips_by_region[colo] = []
+                            
+                        if is_scan_all:
+                            total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+                            if total_collected < ALL_MODE_LIMIT:
+                                valid_ips_by_region[colo].append(result)
+                                print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
+                        else:
+                            if len(valid_ips_by_region[colo]) < sync_count:
+                                valid_ips_by_region[colo].append(result)
+                                print(f"[FOUND {colo}] {result['ip']} (Total {colo}: {len(valid_ips_by_region[colo])}/{sync_count})")
+                        
+                # Early exit check
+                total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
+                if is_scan_all and total_collected >= ALL_MODE_LIMIT:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                elif not is_scan_all and all(len(ips) >= sync_count for ips in valid_ips_by_region.values()):
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
                     
-            pool_set = set(all_ips_pool) - tested_ips
-            all_ips_pool = list(pool_set)
-            random.shuffle(all_ips_pool)
-            
-            chunks = [all_ips_pool[i:i + scan_count] for i in range(0, len(all_ips_pool), scan_count)]
-            for i, chunk in enumerate(chunks):
-                if quota_met or not chunk:
-                    break
-                tested_ips.update(chunk)
-                quota_met = run_batch(chunk, f"{phase_name} Iteration {i+1} (Exact Shuffle)")
-        else:
-            # 对于几千万/上亿的超大 IP 池，展开会导致内存爆炸，所以采用快速去重抽卡
-            print(f"[*] Pool is massive (> 2,000,000). Using fast random generation for {phase_name}...")
-            attempt = 0
-            max_attempts = 30 # 增加尝试次数，因为池子大
-            while not quota_met and attempt < max_attempts:
-                attempt += 1
-                chunk = []
-                gen_attempts = 0
-                while len(chunk) < scan_count and gen_attempts < scan_count * 3:
-                    gen_attempts += 1
-                    ip = generate_random_ip(cidrs_list)
-                    if ip not in tested_ips and ip != "1.1.1.1":
-                        tested_ips.add(ip)
-                        chunk.append(ip)
-                if not chunk:
-                    break
-                quota_met = run_batch(chunk, f"{phase_name} Iteration {attempt} (Random Generate)")
-    
-    # ======================================================================
-    # Phase 1: Test literal IPs from ips-v4.txt (高速复用历史极品单IP)
-    # ======================================================================
-    if literal_ips:
-        unique_literals = list(set(literal_ips))
-        tested_ips.update(unique_literals)
-        quota_met = run_batch(unique_literals, "Phase 1 (Literal IPs from ips-v4.txt)")
-        
-    # ======================================================================
-    # Phase 2: Generate IPs strictly from hot_cidrs derived from ips-v4.txt
-    # ======================================================================
-    if not quota_met and hot_cidrs:
-        process_cidrs(hot_cidrs, "Phase 2 (ips-v4.txt /24 Subnets)")
-        
-    # ======================================================================
-    # Phase 3: Generate IPs from the main ip.txt pool (CF_CIDRS)
-    # ======================================================================
-    if not quota_met and CF_CIDRS:
-        process_cidrs(CF_CIDRS, "Phase 3 (ip.txt CIDR Pool)")
-        
     print("\nScan completed. Summary:")
     total_found = 0
     all_best_ips = []
