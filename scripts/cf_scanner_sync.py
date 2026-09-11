@@ -26,11 +26,11 @@ SYNC_COUNT = 10
 
 import ipaddress
 
-def generate_ips(ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
+def generate_ips(target_regions, is_scan_all, ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
     history_ips = []
     
     # 第一步：先扫描 ips-v4.txt 中的历史优秀单 IP
-    print("Stage 1: Scanning historical excellent IPs...")
+    print("Stage 1: Scanning historical excellent single IPs...")
     if os.path.exists(ips_v4_file):
         try:
             with open(ips_v4_file, "r", encoding="utf-8") as f:
@@ -43,16 +43,40 @@ def generate_ips(ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
         except Exception as e:
             print(f"Error reading {ips_v4_file}: {e}")
 
-    # 第二步：将历史优秀单 IP 扩展为 /24 C段继续扫描 (满足数量增加等扩容需求)
+    # 第二步：智能匹配 good_subnets.txt 中已标记的优秀地区段
+    print("Stage 2: Scanning learned good subnets by region...")
+    good_cidrs_scanned = set()
+    if os.path.exists("good_subnets.txt"):
+        try:
+            with open("good_subnets.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and "#" in line:
+                        cidr, colo = line.split("#", 1)
+                        colo = colo.upper()
+                        # 如果需要扫描所有地区，或者这个段的地区在我们需要的列表中，就优先扫它
+                        if is_scan_all or colo in target_regions:
+                            good_cidrs_scanned.add(cidr)
+                            try:
+                                net = ipaddress.ip_network(cidr, strict=False)
+                                for ip_obj in net:
+                                    yield str(ip_obj)
+                            except Exception:
+                                pass
+        except Exception as e:
+            print(f"Error reading good_subnets.txt: {e}")
+
+    # 第三步：将历史单 IP 扩展为 /24 C段继续扫描（跳过第二步已经扫过的）
     derived_cidrs = set()
     for ip in history_ips:
         parts = ip.split('.')
         if len(parts) == 4:
             cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-            derived_cidrs.add(cidr)
+            if cidr not in good_cidrs_scanned:
+                derived_cidrs.add(cidr)
             
     if derived_cidrs:
-        print(f"Stage 2: Scanning {len(derived_cidrs)} derived /24 subnets from history...")
+        print(f"Stage 3: Scanning {len(derived_cidrs)} derived /24 subnets from history...")
         for cidr in derived_cidrs:
             try:
                 net = ipaddress.ip_network(cidr, strict=False)
@@ -61,8 +85,8 @@ def generate_ips(ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
             except Exception:
                 pass
 
-    # 第三步：如果配额依然没满，按照 ip.txt 中的段进行兜底轮巡扫描
-    print("Stage 3: Scanning full IP database from ip.txt...")
+    # 第四步：如果配额依然没满，按照 ip.txt 中的段进行兜底轮巡扫描
+    print("Stage 4: Scanning full IP database from ip.txt...")
     if os.path.exists(ip_txt_file):
         try:
             with open(ip_txt_file, "r", encoding="utf-8") as f:
@@ -154,6 +178,7 @@ def save_ips_to_file(best_ips):
     bj_time = datetime.now(timezone.utc) + timedelta(hours=8)
     time_str = bj_time.strftime("%Y-%m-%d %H:%M:%S")
     
+    # Save the individual IPs
     with open("ips-v4.txt", "w", encoding="utf-8") as f:
         # 写入纯 IP 和 地区备注，格式为 IP#地区
         # 很多代理/机场客户端使用 # 作为节点备注的分隔符
@@ -161,6 +186,36 @@ def save_ips_to_file(best_ips):
             f.write(f"{ip['ip']}#{ip['colo']}\n")
             
     print("Successfully saved latest IPs to ips-v4.txt")
+
+    # Save the successful /24 subnets persistently for future prioritized scanning
+    subnets = set()
+    if os.path.exists("good_subnets.txt"):
+        try:
+            with open("good_subnets.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        subnets.add(line.strip())
+        except Exception:
+            pass
+
+    new_subnets = 0
+    for ip in best_ips:
+        parts = ip['ip'].split('.')
+        if len(parts) == 4:
+            cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+            entry = f"{cidr}#{ip['colo']}"
+            if entry not in subnets:
+                subnets.add(entry)
+                new_subnets += 1
+
+    if new_subnets > 0:
+        try:
+            with open("good_subnets.txt", "w", encoding="utf-8") as f:
+                for entry in sorted(subnets):
+                    f.write(f"{entry}\n")
+            print(f"Successfully learned and saved {new_subnets} new good subnets to good_subnets.txt")
+        except Exception as e:
+            print(f"Error saving subnets: {e}")
 
 def main():
     api_token = os.environ.get("CF_API_TOKEN")
@@ -203,7 +258,7 @@ def main():
             return all(len(ips) >= sync_count for ips in valid_ips_by_region.values())
 
     tested_ips = set()
-    ip_generator = generate_ips()
+    ip_generator = generate_ips(target_regions=target_regions, is_scan_all=is_scan_all)
     
     # === 并发线程配置区 ===
     # 控制同时发起多少个测速请求，默认 50，太高容易导致测速接口崩溃
