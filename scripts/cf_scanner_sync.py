@@ -257,70 +257,89 @@ def main():
         return False
 
     quota_met = False
+    tested_ips = set()
     
-    # Phase 1: Test literal IPs from ips-v4.txt (高速复用历史极品节点)
-    if literal_ips:
-        quota_met = run_batch(literal_ips, "Phase 1 (Literal IPs from ips-v4.txt)")
+    # --- Helper: Safely expand CIDRs into randomized batches ---
+    def process_cidrs(cidrs_list, phase_name):
+        nonlocal quota_met
+        if quota_met or not cidrs_list:
+            return
+            
+        print(f"\n[*] Calculating capacity for {phase_name} pool...")
+        total_ips = 0
+        for cidr in cidrs_list:
+            if '/' in cidr:
+                try:
+                    prefix = int(cidr.split('/')[1])
+                    if prefix <= 32:
+                        total_ips += 1 << (32 - prefix)
+                except:
+                    pass
+            else:
+                total_ips += 1
+                
+        print(f"[*] Capacity for {phase_name}: {total_ips} IPs")
         
-    # Phase 2: Generate random IPs (from hot_cidrs and ip.txt) until quota is met
-    all_cidrs = list(set(CF_CIDRS + (hot_cidrs if hot_cidrs else [])))
-    total_ips = 0
-    for cidr in all_cidrs:
-        if '/' in cidr:
-            try:
-                prefix = int(cidr.split('/')[1])
-                if prefix <= 32:
-                    total_ips += 1 << (32 - prefix)
-            except:
-                pass
+        if total_ips <= 100000:
+            all_ips_pool = []
+            for cidr in cidrs_list:
+                if '/' not in cidr:
+                    cidr += '/32'
+                try:
+                    net = ipaddress.ip_network(cidr, strict=False)
+                    for ip in net:
+                        all_ips_pool.append(str(ip))
+                except:
+                    pass
+                    
+            pool_set = set(all_ips_pool) - tested_ips
+            all_ips_pool = list(pool_set)
+            random.shuffle(all_ips_pool)
+            
+            chunks = [all_ips_pool[i:i + scan_count] for i in range(0, len(all_ips_pool), scan_count)]
+            for i, chunk in enumerate(chunks):
+                if quota_met or not chunk:
+                    break
+                tested_ips.update(chunk)
+                quota_met = run_batch(chunk, f"{phase_name} Iteration {i+1} (Exact Shuffle)")
         else:
-            total_ips += 1
-
-    print(f"[*] Total IP pool capacity calculated: {total_ips} IPs")
-    attempt = 0
+            print(f"[*] Pool is massive. Using fast random generation for {phase_name}...")
+            attempt = 0
+            max_attempts = 15
+            while not quota_met and attempt < max_attempts:
+                attempt += 1
+                chunk = []
+                gen_attempts = 0
+                while len(chunk) < scan_count and gen_attempts < scan_count * 3:
+                    gen_attempts += 1
+                    ip = generate_random_ip(cidrs_list)
+                    if ip not in tested_ips and ip != "1.1.1.1":
+                        tested_ips.add(ip)
+                        chunk.append(ip)
+                if not chunk:
+                    break
+                quota_met = run_batch(chunk, f"{phase_name} Iteration {attempt} (Random Generate)")
     
-    if total_ips <= 100000:
-        print(f"[*] Pool is small (<= 100,000). Extracting all {total_ips} IPs for exact shuffling and batching...")
-        all_ips_pool = []
-        for cidr in all_cidrs:
-            if '/' not in cidr:
-                cidr += '/32'
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-                for ip in net:
-                    all_ips_pool.append(str(ip))
-            except:
-                pass
+    # ======================================================================
+    # Phase 1: Test literal IPs from ips-v4.txt (高速复用历史极品单IP)
+    # ======================================================================
+    if literal_ips:
+        unique_literals = list(set(literal_ips))
+        tested_ips.update(unique_literals)
+        quota_met = run_batch(unique_literals, "Phase 1 (Literal IPs from ips-v4.txt)")
         
-        pool_set = set(all_ips_pool) - set(literal_ips)
-        all_ips_pool = list(pool_set)
-        random.shuffle(all_ips_pool)
+    # ======================================================================
+    # Phase 2: Generate IPs strictly from hot_cidrs derived from ips-v4.txt
+    # ======================================================================
+    if not quota_met and hot_cidrs:
+        process_cidrs(hot_cidrs, "Phase 2 (ips-v4.txt /24 Subnets)")
         
-        chunks = [all_ips_pool[i:i + scan_count] for i in range(0, len(all_ips_pool), scan_count)]
-        for ips_to_test in chunks:
-            if quota_met or not ips_to_test:
-                break
-            attempt += 1
-            quota_met = run_batch(ips_to_test, f"Phase 2 Iteration {attempt} (Exact Shuffle Batch)")
-    else:
-        print(f"[*] Pool is massive (> 100,000). Using random generation with deduplication...")
-        tested_ips = set(literal_ips)
-        max_attempts = 15
-        while not quota_met and attempt < max_attempts:
-            attempt += 1
-            ips_to_test = []
-            gen_attempts = 0
-            while len(ips_to_test) < scan_count and gen_attempts < scan_count * 3:
-                gen_attempts += 1
-                ip = generate_random_ip(hot_cidrs)
-                if ip not in tested_ips and ip != "1.1.1.1":
-                    tested_ips.add(ip)
-                    ips_to_test.append(ip)
-            
-            if not ips_to_test:
-                break
-            quota_met = run_batch(ips_to_test, f"Phase 2 Iteration {attempt} (Random Generation Batch)")
-            
+    # ======================================================================
+    # Phase 3: Generate IPs from the main ip.txt pool (CF_CIDRS)
+    # ======================================================================
+    if not quota_met and CF_CIDRS:
+        process_cidrs(CF_CIDRS, "Phase 3 (ip.txt CIDR Pool)")
+        
     print("\nScan completed. Summary:")
     total_found = 0
     all_best_ips = []
