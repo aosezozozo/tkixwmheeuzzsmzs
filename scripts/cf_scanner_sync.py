@@ -23,6 +23,8 @@ SYNC_MAIN_DOMAIN = "NO"
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
 SYNC_COUNT = 5
+# 控制 ALL / ALL_NOSYNC 全局模式下，最终要扫出多少个 IP 才停止 (默认 20 个)
+ALL_MODE_LIMIT = 20
 # ==========================================
 
     # === Cloudflare IPv4 Ranges (IP段配置区) ===
@@ -203,7 +205,7 @@ def main():
     
     check_api_url = "https://proxyip.xxxxxxx.nyc.mn/check"
     sync_count = SYNC_COUNT
-    ALL_MODE_LIMIT = 20
+    all_mode_limit_count = ALL_MODE_LIMIT
     
     # === 1. 从 ips-v4.txt 提取历史优秀 IP ===
     historical_ips = []
@@ -251,7 +253,7 @@ def main():
         
     def is_target_reached():
         total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-        if is_scan_all and total_collected >= ALL_MODE_LIMIT:
+        if is_scan_all and total_collected >= all_mode_limit_count:
             return True
         elif not is_scan_all and all(len(ips) >= sync_count for ips in valid_ips_by_region.values()):
             return True
@@ -276,9 +278,9 @@ def main():
                             
                         if is_scan_all:
                             total_collected = sum(len(ips) for ips in valid_ips_by_region.values())
-                            if total_collected < ALL_MODE_LIMIT:
+                            if total_collected < all_mode_limit_count:
                                 valid_ips_by_region[colo].append(result)
-                                print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{ALL_MODE_LIMIT})")
+                                print(f"[FOUND {colo}] {result['ip']} (Total ALL: {total_collected + 1}/{all_mode_limit_count})")
                         else:
                             if len(valid_ips_by_region[colo]) < sync_count:
                                 valid_ips_by_region[colo].append(result)
@@ -350,7 +352,7 @@ def main():
         ips.sort(key=lambda x: x["latency"])
         
         # Take the top fastest ones
-        limit = ALL_MODE_LIMIT if is_scan_all else sync_count
+        limit = all_mode_limit_count if is_scan_all else sync_count
         best_ips = ips[:limit]
         all_best_ips.extend(best_ips)
         
