@@ -174,7 +174,7 @@ def main():
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
-    check_api_url = "https://cloudflarenb-pagesip.pages.dev/check"
+    check_api_url = "https://proxyip.nbo.us.ci/check"
     sync_count = SYNC_COUNT
     ALL_MODE_LIMIT = 20
     
