@@ -30,6 +30,7 @@ def generate_ips(ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
     history_ips = []
     
     # 第一步：先扫描 ips-v4.txt 中的历史优秀单 IP
+    print("Stage 1: Scanning historical excellent IPs...")
     if os.path.exists(ips_v4_file):
         try:
             with open(ips_v4_file, "r", encoding="utf-8") as f:
@@ -50,15 +51,18 @@ def generate_ips(ips_v4_file="ips-v4.txt", ip_txt_file="ip.txt"):
             cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
             derived_cidrs.add(cidr)
             
-    for cidr in derived_cidrs:
-        try:
-            net = ipaddress.ip_network(cidr, strict=False)
-            for ip_obj in net:
-                yield str(ip_obj)
-        except Exception:
-            pass
+    if derived_cidrs:
+        print(f"Stage 2: Scanning {len(derived_cidrs)} derived /24 subnets from history...")
+        for cidr in derived_cidrs:
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+                for ip_obj in net:
+                    yield str(ip_obj)
+            except Exception:
+                pass
 
     # 第三步：如果配额依然没满，按照 ip.txt 中的段进行兜底轮巡扫描
+    print("Stage 3: Scanning full IP database from ip.txt...")
     if os.path.exists(ip_txt_file):
         try:
             with open(ip_txt_file, "r", encoding="utf-8") as f:
@@ -219,11 +223,16 @@ def main():
         # 初始提交一批任务
         submit_next_batch(200)
         
+        total_tested = 0
         while futures:
             done, not_done = concurrent.futures.wait(futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
             
             for future in done:
                 ip = futures.pop(future)
+                total_tested += 1
+                if total_tested % 50 == 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Tested {total_tested} IPs so far...")
+                    
                 try:
                     result = future.result()
                     if result:
