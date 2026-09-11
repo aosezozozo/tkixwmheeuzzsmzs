@@ -6,6 +6,7 @@ import re
 import requests
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
+import ipaddress
 
 # ==========================================
 # 🎯 全局默认地区设置 (如果想要永久换地区，只改这里！)
@@ -21,8 +22,9 @@ SYNC_MAIN_DOMAIN = "NO"
 
 # 🎯 扫描与同步数量设置
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
-SYNC_COUNT = 5
-# 控制每次随机生成多少个 IP 去抽卡测速 (默认 2000 个)
+SYNC_COUNT = 10
+# 控制每次最多随机生成多少个 IP 去抽卡测速 (默认 2000 个)。
+# 注：如果你提供的 IP 池非常小（比如只有 10 个），程序会自动感知并缩小此数字，绝不多测。
 SCAN_COUNT = 2000
 # ==========================================
 
@@ -179,7 +181,7 @@ def main():
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
-    check_api_url = "https://proxyip.xxxxxxxx.nyc.mn/check"
+    check_api_url = "https://proxyip.xxxxxxx.nyc.mn/check"
     sync_count = SYNC_COUNT
     scan_count = SCAN_COUNT
     
@@ -261,34 +263,64 @@ def main():
         quota_met = run_batch(literal_ips, "Phase 1 (Literal IPs from ips-v4.txt)")
         
     # Phase 2: Generate random IPs (from hot_cidrs and ip.txt) until quota is met
-    def get_dynamic_scan_count(hot_cidrs_list, default_count):
-        total_ips = 0
-        all_cidrs = CF_CIDRS + (hot_cidrs_list if hot_cidrs_list else [])
-        for cidr in all_cidrs:
-            if '/' in cidr:
-                try:
-                    prefix = int(cidr.split('/')[1])
-                    if prefix <= 32:
-                        total_ips += 1 << (32 - prefix)
-                except:
-                    pass
-            else:
-                total_ips += 1
-        if 0 < total_ips < default_count:
-            return total_ips
-        return default_count
-        
-    dynamic_scan_count = get_dynamic_scan_count(hot_cidrs, scan_count)
-    if dynamic_scan_count < scan_count:
-        print(f"[*] Detected small IP pool (Total: {dynamic_scan_count} IPs). Dynamically adjusted SCAN_COUNT to {dynamic_scan_count}.")
-        
-    max_attempts = 10
+    all_cidrs = list(set(CF_CIDRS + (hot_cidrs if hot_cidrs else [])))
+    total_ips = 0
+    for cidr in all_cidrs:
+        if '/' in cidr:
+            try:
+                prefix = int(cidr.split('/')[1])
+                if prefix <= 32:
+                    total_ips += 1 << (32 - prefix)
+            except:
+                pass
+        else:
+            total_ips += 1
+
+    print(f"[*] Total IP pool capacity calculated: {total_ips} IPs")
     attempt = 0
-    while not quota_met and attempt < max_attempts:
-        attempt += 1
-        ips_to_test = [generate_random_ip(hot_cidrs) for _ in range(dynamic_scan_count)]
-        quota_met = run_batch(ips_to_test, f"Phase 2 Iteration {attempt} (Random Generation)")
+    
+    if total_ips <= 100000:
+        print(f"[*] Pool is small (<= 100,000). Extracting all {total_ips} IPs for exact shuffling and batching...")
+        all_ips_pool = []
+        for cidr in all_cidrs:
+            if '/' not in cidr:
+                cidr += '/32'
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+                for ip in net:
+                    all_ips_pool.append(str(ip))
+            except:
+                pass
         
+        pool_set = set(all_ips_pool) - set(literal_ips)
+        all_ips_pool = list(pool_set)
+        random.shuffle(all_ips_pool)
+        
+        chunks = [all_ips_pool[i:i + scan_count] for i in range(0, len(all_ips_pool), scan_count)]
+        for ips_to_test in chunks:
+            if quota_met or not ips_to_test:
+                break
+            attempt += 1
+            quota_met = run_batch(ips_to_test, f"Phase 2 Iteration {attempt} (Exact Shuffle Batch)")
+    else:
+        print(f"[*] Pool is massive (> 100,000). Using random generation with deduplication...")
+        tested_ips = set(literal_ips)
+        max_attempts = 15
+        while not quota_met and attempt < max_attempts:
+            attempt += 1
+            ips_to_test = []
+            gen_attempts = 0
+            while len(ips_to_test) < scan_count and gen_attempts < scan_count * 3:
+                gen_attempts += 1
+                ip = generate_random_ip(hot_cidrs)
+                if ip not in tested_ips and ip != "1.1.1.1":
+                    tested_ips.add(ip)
+                    ips_to_test.append(ip)
+            
+            if not ips_to_test:
+                break
+            quota_met = run_batch(ips_to_test, f"Phase 2 Iteration {attempt} (Random Generation Batch)")
+            
     print("\nScan completed. Summary:")
     total_found = 0
     all_best_ips = []
