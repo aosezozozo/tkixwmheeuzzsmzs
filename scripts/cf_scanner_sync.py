@@ -24,7 +24,7 @@ SYNC_MAIN_DOMAIN = "NO"
 # 控制每个地区最终要同步几个 IP 到 Cloudflare DNS (默认 10 个)
 SYNC_COUNT = 5
 # 控制 ALL / ALL_NOSYNC 全局模式下，最终要扫出多少个 IP 才停止 (默认 20 个)
-ALL_MODE_LIMIT = 20
+ALL_MODE_LIMIT = 200
 # ==========================================
 
     # === Cloudflare IPv4 Ranges (IP段配置区) ===
