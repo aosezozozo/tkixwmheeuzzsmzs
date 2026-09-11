@@ -291,13 +291,15 @@ def main():
                     break
         return success_count
 
-    # Phase 1: Test historical IPs first
-    if historical_ips:
+    # Phase 1: Test historical IPs first (Skip in Global Scan mode)
+    if historical_ips and not is_scan_all:
         print(f"\nPhase 1: Testing {len(historical_ips)} historical IPs from ips-v4.txt...")
         process_ips(historical_ips)
+    elif is_scan_all:
+        print("\n[Global Mode] Skipping Phase 1 (Historical IPs)...")
 
-    # Phase 2: Generate from hot subnets if target not reached
-    if not is_target_reached() and hot_cidrs:
+    # Phase 2: Generate from hot subnets if target not reached (Skip in Global Scan mode)
+    if not is_target_reached() and hot_cidrs and not is_scan_all:
         print(f"\nPhase 2: Target not reached. Scanning individual hot subnets...")
         for cidr in hot_cidrs:
             if is_target_reached():
