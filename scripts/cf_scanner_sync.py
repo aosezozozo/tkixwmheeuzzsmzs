@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 # 🎯 全局默认地区设置 (如果想要永久换地区，只改这里！)
 # 支持多个地区，用逗号隔开，例如 "SJC,LAX,HKG,FRA,NRT"
 # 💡 新手不知道有什么地区？可以直接填 "ALL"，系统会全区盲扫并自动创建所有能扫到的地区子域名！
+# 💡 填 "ALL_NOSYNC" 则是全局盲扫但不进行 DNS 同步，只将扫到的优质 IP 及其网段保存到日志！
 # ==========================================
 DEFAULT_REGIONS = "SJC"
 
@@ -191,10 +192,14 @@ def main():
     
     region_input = DEFAULT_REGIONS
     target_regions = [r.strip().upper() for r in region_input.split(",") if r.strip()]
-    is_scan_all = "ALL" in target_regions
+    is_scan_all = "ALL" in target_regions or "ALL_NOSYNC" in target_regions
+    force_no_sync = "ALL_NOSYNC" in target_regions
     
     if is_scan_all:
-        print(f"Target Regions dynamically set to: ALL (Global Scan Mode)")
+        if force_no_sync:
+            print(f"Target Regions dynamically set to: ALL_NOSYNC (Global Scan & Log Mode, DNS Sync Disabled)")
+        else:
+            print(f"Target Regions dynamically set to: ALL (Global Scan Mode)")
     else:
         print(f"Target Regions dynamically set to: {target_regions}")
     
@@ -234,7 +239,10 @@ def main():
             pass
     
     can_sync = True
-    if not all([api_token, zone_id, base_domain, cf_email]):
+    if force_no_sync:
+        can_sync = False
+        print("DNS Synchronization is intentionally DISABLED by ALL_NOSYNC mode.")
+    elif not all([api_token, zone_id, base_domain, cf_email]):
         print("Warning: Missing required environment variables (CF_API_TOKEN, CF_ZONE_ID, CF_TARGET_DOMAIN, CF_EMAIL).")
         print("DNS Synchronization will be skipped, but IP scanning will still proceed!")
         can_sync = False
